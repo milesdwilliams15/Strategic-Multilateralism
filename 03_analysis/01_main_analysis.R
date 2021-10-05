@@ -46,11 +46,14 @@ new_dt <- dt %>%
 
 # analysis ----------------------------------------------------------------
 
-fit <- rob_sarm(
+fit <- sarm(
   wb ~ wb_budget + donor_aid +
     g7 + dac_non_g7 + non_dac +
-    income + recipient_iso3,
-  data = new_dt
+    gdp + pop + 
+    recipient_iso3,
+  data = new_dt,
+  robust = T,
+  cluster = T
 )
 summary_sarm(fit)
 
@@ -58,8 +61,8 @@ new_summary <- fit$summary %>%
   mutate(
     term = c(
       "Control", "G7 Aid", "DAC (non-G7) Aid",
-      "Non-DAC Aid", "Development",
-      "$\\gamma$"
+      "Non-DAC Aid", "GDP", "Population", 
+      "$\\gamma$", "\\ln(\\sigma)"
     )
   ) %>%
   rename(
@@ -81,58 +84,124 @@ reg_tab <- kable(new_summary, "latex", booktabs = T,
   )
 save(reg_tab, file = "04_paper/reg_tab.tex")
 
-me_on_gapFilling <- function(fit){
-  pars     <- fit$summary$estimate
-  mod_se   <- fit$summary$std.error
-  mar_effs <- list()
-  X <- cbind(control = 1, fit$model_frame[, -c(1:3)])
-  for(j in colnames(X)[-1]){
-    X_means = matrix(rep(rbind(apply(X,2,mean)),
-                         len=100*ncol(X)),
-                     ncol=ncol(X),byrow = T)
-    colnames(X_means) = colnames(X)
-    X_means[,j] = seq(-2,2,len=100)
-    delta = - pars[ncol(X)+1]/
-      (exp(X_means%*%pars[1:ncol(X)])+1)
-    delta.b = matrix(0,ncol=10000,nrow=100)
-    for(i in 1:10000){
-      err <- c()
-      for(k in 1:(ncol(X)+1)){
-        err[k] = rnorm(n=1,sd=mod_se[k])
-      }
-      delta.b[,i] = (pars[ncol(X)+1]+err[ncol(X)+1])/
-        (exp(X_means%*%(pars[1:ncol(X)]+err[1:ncol(X)]))+1)
-    }
-    mar_effs[[j]] = data.frame(delta = delta,
-                               se = apply(delta.b,1,sd),
-                               var = X_means[,j],
-                               term = j)
-  }
-  out = do.call(rbind,mar_effs)
-  rownames(out) = NULL
-  return(out)
-}
-
-mes <- me_on_gapFilling(fit)
-mes %>% 
+g7_dt <- fit$model_frame %>%
   mutate(
-    term = rep(
-      c("(1) G7", "(2) DAC - G7",
-        "(3) Non-DAC", "(4) Development"),
-      each = 100
-    )
+    wb_budget = mean(wb_budget),
+    g7 = seq(-2, 2, len = n()),
+    donor_aid = g7 + mean(dac_non_g7) + mean(non_dac),
+    dac_non_g7 = mean(dac_non_g7),
+    non_dac = mean(non_dac),
+    gdp = mean(gdp),
+    pop = mean(pop)
+  )
+
+preds1 <- predict_sarm(
+  model = fit,
+  newdata = g7_dt
+)
+
+p1 <- preds1 %>%
+  mutate(
+    g7 = g7_dt$g7
   ) %>%
-  ggplot(aes(var,delta)) + geom_line(size=1) + 
-  geom_ribbon(aes(ymin=delta - 1.96*se,
-                  ymax=delta + 1.96*se),
-              alpha=.5) +
-  geom_hline(yintercept = 0,linetype=2) +
-  facet_wrap(~term) +
-  labs(x="Covariate Values",
-       y="Marginal Effect on Gap-Filling") +
-  theme_bw() +
-  theme(text=element_text(family="serif")) +
-  ggsave('04_paper/meplot.png',
-         units="in",
-         height=4,
-         width = 5)
+  ggplot() +
+  aes(
+    x = g7,
+    y = fit,
+    ymin = lwr,
+    ymax = upr
+  ) +
+  geom_line(size = 0.75) +
+  geom_ribbon(
+    alpha = 0.4
+  ) +
+  labs(
+    x = "G7 Aid",
+    y = "Predicted WB Allocation\n(IHS with 95% CIs)"
+  ) +
+  theme_bw()
+
+dac_non_g7_dt <- fit$model_frame %>%
+  mutate(
+    wb_budget = mean(wb_budget),
+    dac_non_g7 = seq(-2, 2, len = n()),
+    donor_aid = mean(g7) + dac_non_g7 + mean(non_dac),
+    g7 = mean(g7),
+    non_dac = mean(non_dac),
+    gdp = mean(gdp),
+    pop = mean(pop)
+  )
+
+preds2 <- predict_sarm(
+  model = fit,
+  newdata = dac_non_g7_dt
+)
+
+p2 <- preds2 %>%
+  mutate(
+    dac_non_g7 = dac_non_g7_dt$dac_non_g7
+  ) %>%
+  ggplot() +
+  aes(
+    x = dac_non_g7,
+    y = fit,
+    ymin = lwr,
+    ymax = upr
+  ) +
+  geom_line(size = 0.75) +
+  geom_ribbon(
+    alpha = 0.4
+  ) +
+  labs(
+    x = "DAC Aid (excluding G7)",
+    y = "Predicted WB Allocation\n(IHS with 95% CIs)"
+  ) +
+  theme_bw()
+
+non_dac_dt <- fit$model_frame %>%
+  mutate(
+    wb_budget = mean(wb_budget),
+    non_dac = seq(-2, 2, len = n()),
+    donor_aid = mean(g7) + mean(dac_non_g7) + non_dac,
+    dac_non_g7 = mean(dac_non_g7),
+    g7 = mean(non_dac),
+    gdp = mean(gdp),
+    pop = mean(pop)
+  )
+
+preds3 <- predict_sarm(
+  model = fit,
+  newdata = non_dac_dt
+)
+
+p3 <- preds3 %>%
+  mutate(
+    non_dac = non_dac_dt$non_dac
+  ) %>%
+  ggplot() +
+  aes(
+    x = non_dac,
+    y = fit,
+    ymin = lwr,
+    ymax = upr
+  ) +
+  geom_line(size = 0.75) +
+  geom_ribbon(
+    alpha = 0.4
+  ) +
+  labs(
+    x = "Non-DAC Aid",
+    y = "Predicted WB Allocation\n(IHS with 95% CIs)"
+  ) +
+  theme_bw()
+
+gridExtra::grid.arrange(
+  p1, p2, p3, ncol = 1
+) %>%
+  ggsave(
+    plot = .,
+    filename = "04_paper/pred_plot.png",
+    height = 8,
+    width = 4
+  )
+
